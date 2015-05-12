@@ -1,5 +1,5 @@
-﻿using Compose.Logging;
-using Microsoft.Framework.DependencyInjection;
+﻿using Microsoft.Framework.DependencyInjection;
+using Microsoft.Framework.Logging;
 using Microsoft.WindowsAzure.ServiceRuntime;
 using System;
 using System.Net;
@@ -10,15 +10,16 @@ namespace Compose.AzureCloudService
     public abstract class WorkerRole : RoleEntryPoint
     {
         private readonly ServiceApplication _app;
-        private readonly ILogger _logger;
         private readonly ManualResetEventSlim _complete;
         private readonly CancellationTokenSource _tokenSource;
-        protected ILogger Log {  get { return _logger; } }
+
+        protected ILogger Logger { get; private set; }
 
         public WorkerRole()
         {
             _app = new ServiceApplication();
             _app.Name = ApplicationName;
+            Exception serviceException = null;
             _app.UseServices(services =>
             {
                 services.AddLogging();
@@ -29,12 +30,17 @@ namespace Compose.AzureCloudService
                 }
                 catch (Exception ex)
                 {
-                    Log.Exception(LoggingLevel.Error, ex, $"Exception occurred during `{nameof(AddServices)}`");
-                    throw;
+                    serviceException = ex;
                 }
             });
             _complete = new ManualResetEventSlim(false);
             _tokenSource = new CancellationTokenSource();
+
+            Logger = _app.HostingServices.GetRequiredService<ILoggerFactory>().CreateLogger(_app.Name);
+            if (serviceException == null) return;
+
+            Logger.LogError($"Exception occurred during `{nameof(AddServices)}`", serviceException);
+            throw serviceException;
         }
 
         protected abstract string ApplicationName { get; }
@@ -45,7 +51,7 @@ namespace Compose.AzureCloudService
 
         public override bool OnStart()
         {
-            Log.Message(LoggingLevel.Verbose, $"{_app.Name} is starting...");
+            Logger.LogVerbose($"{_app.Name} is starting...");
             ServicePointManager.DefaultConnectionLimit = 12;
             try
             {
@@ -53,25 +59,25 @@ namespace Compose.AzureCloudService
             }
             catch (Exception ex)
             {
-                Log.Exception(LoggingLevel.Error, ex, $"Exception occurred during `{nameof(UseApplication)}`");
+                Logger.LogError($"Exception occurred during `{nameof(UseApplication)}`", ex);
                 return false;
             }
-            Log.Message(LoggingLevel.Information, $"{_app.Name} has started.");
+            Logger.LogInformation($"{_app.Name} has started.");
             return base.OnStart();
         }
 
         public override void Run()
         {
-            Log.Message(LoggingLevel.Information, $"{_app.Name} is running...");
+            Logger.LogInformation($"{_app.Name} is running...");
             try
             {
                 _app.Execute(_tokenSource.Token);
                 if (!_tokenSource.IsCancellationRequested)
-                    Log.Message(LoggingLevel.Verbose, $"{_app.Name} completed, but Cancellation has not been requested.");
+                    Logger.LogVerbose($"{_app.Name} completed, but Cancellation has not been requested.");
             }
             catch (Exception ex)
             {
-                Log.Exception(LoggingLevel.Error, ex, $"Exception occurred executing {_app.Name}");
+                Logger.LogError($"Exception occurred executing {_app.Name}", ex);
                 throw;
             }
             finally
@@ -82,10 +88,10 @@ namespace Compose.AzureCloudService
 
         public override void OnStop()
         {
-            Log.Message(LoggingLevel.Information, $"{_app.Name} is stopping...");
+            Logger.LogInformation($"{_app.Name} is stopping...");
             _tokenSource.Cancel();
             _complete.Wait();
-            Log.Message(LoggingLevel.Verbose, $"{_app.Name} has stopped.");
+            Logger.LogVerbose($"{_app.Name} has stopped.");
         }
     }
 }
